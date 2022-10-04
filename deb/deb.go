@@ -15,7 +15,7 @@ import (
 	"text/template"
 	"time"
 
-	"github.com/blakesmith/ar"
+	"github.com/erikgeiser/ar"
 	"github.com/goreleaser/chglog"
 	"github.com/goreleaser/nfpm/v2"
 	"github.com/goreleaser/nfpm/v2/deprecation"
@@ -103,44 +103,44 @@ func (d *Deb) Package(info *nfpm.Info, deb io.Writer) (err error) { // nolint: f
 		return err
 	}
 
-	controlTarGz, err := createControl(instSize, md5sums, info)
-	if err != nil {
-		return err
-	}
-
-	debianBinary := []byte("2.0\n")
+	// the writer is properly closed later, this is just in case that we error out
+	defer dataTarball.Close() //nolint:errcheck
 
 	w := ar.NewWriter(deb)
-	if err := w.WriteGlobalHeader(); err != nil {
-		return fmt.Errorf("cannot write ar header to deb file: %w", err)
+
+	// the writer is properly closed later, this is just in case that we error out
+	defer w.Close() //nolint:errcheck
+
+	if err = addDebianBinary(w); err != nil {
+		return fmt.Errorf("add debian-binary to deb: %w", err)
 	}
 
-	if err := addArFile(w, "debian-binary", debianBinary); err != nil {
-		return fmt.Errorf("cannot pack debian-binary: %w", err)
+	if err = addControl(w, instSize, md5sums, info); err != nil {
+		return fmt.Errorf("add control.tar.gz content to deb: %w", err)
 	}
 
-	if err := addArFile(w, "control.tar.gz", controlTarGz); err != nil {
-		return fmt.Errorf("cannot add control.tar.gz to deb: %w", err)
+	if err = addDataTarball(w, dataTarballName, dataTarball); err != nil {
+		return fmt.Errorf("add data tarball header to deb: %w", err)
 	}
 
-	if err := addArFile(w, dataTarballName, dataTarball); err != nil {
-		return fmt.Errorf("cannot add data.tar.gz to deb: %w", err)
+	// if info.Deb.Signature.KeyFile != "" {
+	// 	sig, sigType, err := doSign(info, debianBinary, controlTarGz, dataTarball)
+	// 	if err != nil {
+	// 		return err
+	// 	}
+
+	// 	if err := addArFile(w, "_gpg"+sigType, sig); err != nil {
+	// 		return &nfpm.ErrSigningFailure{
+	// 			Err: fmt.Errorf("add signature to ar file: %w", err),
+	// 		}
+	// 	}
+	// }
+
+	if err = dataTarball.Close(); err != nil {
+		return fmt.Errorf("closing data tarball: %w", err)
 	}
 
-	if info.Deb.Signature.KeyFile != "" {
-		sig, sigType, err := doSign(info, debianBinary, controlTarGz, dataTarball)
-		if err != nil {
-			return err
-		}
-
-		if err := addArFile(w, "_gpg"+sigType, sig); err != nil {
-			return &nfpm.ErrSigningFailure{
-				Err: fmt.Errorf("add signature to ar file: %w", err),
-			}
-		}
-	}
-
-	return nil
+	return w.Close()
 }
 
 func doSign(info *nfpm.Info, debianBinary, controlTarGz, dataTarball []byte) ([]byte, string, error) {
@@ -269,18 +269,145 @@ func (*Deb) SetPackagerDefaults(info *nfpm.Info) {
 	}
 }
 
-func addArFile(w *ar.Writer, name string, body []byte) error {
+func addDebianBinary(w ar.Writer) error {
+	debianBinary := "2.0\n"
+	err := addArHeader(w, "debian-binary", int64(len(debianBinary)))
+	if err != nil {
+		return err
+	}
+
+	_, err = w.Write([]byte(debianBinary))
+
+	return err
+}
+
+// nolint:funlen
+func addControl(w ar.Writer, instSize int64, md5sums []byte, info *nfpm.Info) error {
+	err := addArHeader(w, "control.tar.gz", ar.UnknownSize)
+	if err != nil {
+		return err
+	}
+
+	compress := gzip.NewWriter(w)
+	out := tar.NewWriter(compress)
+	// the writers are properly closed later, this is just in case that we have
+	// an error in another part of the code.
+	defer out.Close()      // nolint: errcheck
+	defer compress.Close() // nolint: errcheck
+
+	var body bytes.Buffer
+	if err := writeControlFile(&body, controlData{
+		Info:          info,
+		InstalledSize: instSize / 1024,
+	}); err != nil {
+		return err
+	}
+
+	filesToCreate := map[string][]byte{
+		"control":   body.Bytes(),
+		"md5sums":   md5sums,
+		"conffiles": conffiles(info),
+	}
+
+	if info.Changelog != "" {
+		changeLogData, err := formatChangelog(info)
+		if err != nil {
+			return err
+		}
+
+		filesToCreate["changelog"] = []byte(changeLogData)
+	}
+
+	triggers := createTriggers(info)
+	if len(triggers) > 0 {
+		filesToCreate["triggers"] = triggers
+	}
+
+	for name, content := range filesToCreate {
+		if err := newFileInsideTar(out, name, content); err != nil {
+			return err
+		}
+	}
+
+	type fileAndMode struct {
+		fileName string
+		mode     int64
+	}
+
+	specialFiles := map[string]*fileAndMode{}
+	specialFiles[info.Scripts.PreInstall] = &fileAndMode{
+		fileName: "preinst",
+		mode:     0o755,
+	}
+	specialFiles[info.Scripts.PostInstall] = &fileAndMode{
+		fileName: "postinst",
+		mode:     0o755,
+	}
+	specialFiles[info.Scripts.PreRemove] = &fileAndMode{
+		fileName: "prerm",
+		mode:     0o755,
+	}
+	specialFiles[info.Scripts.PostRemove] = &fileAndMode{
+		fileName: "postrm",
+		mode:     0o755,
+	}
+	specialFiles[info.Overridables.Deb.Scripts.Rules] = &fileAndMode{
+		fileName: "rules",
+		mode:     0o755,
+	}
+	specialFiles[info.Overridables.Deb.Scripts.Templates] = &fileAndMode{
+		fileName: "templates",
+		mode:     0o644,
+	}
+	specialFiles[info.Overridables.Deb.Scripts.Config] = &fileAndMode{
+		fileName: "config",
+		mode:     0o755,
+	}
+
+	for path, destMode := range specialFiles {
+		if path != "" {
+			if err := newFilePathInsideTar(out, path, destMode.fileName, destMode.mode); err != nil {
+				return err
+			}
+		}
+	}
+
+	if err := out.Close(); err != nil {
+		return fmt.Errorf("closing control.tar.gz: %w", err)
+	}
+
+	if err := compress.Close(); err != nil {
+		return fmt.Errorf("closing control.tar.gz: %w", err)
+	}
+
+	return nil
+}
+
+func addDataTarball(w ar.Writer, name string, buffer *temporaryBuffer) error {
+	fmt.Println("buffer size", buffer.Size())
+	err := addArHeader(w, name, buffer.Size())
+	if err != nil {
+		return err
+	}
+
+	_, err = io.Copy(w, buffer)
+
+	return err
+}
+
+func addArHeader(w ar.Writer, name string, size int64) error {
 	header := ar.Header{
 		Name:    files.ToNixPath(name),
-		Size:    int64(len(body)),
+		Size:    size,
 		Mode:    0o644,
 		ModTime: time.Now(),
 	}
+
 	if err := w.WriteHeader(&header); err != nil {
 		return fmt.Errorf("cannot write file header: %w", err)
 	}
-	_, err := w.Write(body)
-	return err
+
+	return nil
 }
 
 type nopCloser struct {
@@ -289,44 +416,127 @@ type nopCloser struct {
 
 func (nopCloser) Close() error { return nil }
 
-func createDataTarball(info *nfpm.Info) (dataTarBall, md5sums []byte,
+type temporaryBuffer struct {
+	io.ReadWriter
+}
+
+var _ io.ReadWriteCloser = temporaryBuffer{}
+
+func (tb temporaryBuffer) Size() int64 {
+	switch t := tb.ReadWriter.(type) {
+	case *os.File:
+		stat, err := t.Stat()
+		if err != nil {
+			return ar.UnknownSize
+		}
+
+		return stat.Size()
+	case *bytes.Buffer:
+		return int64(t.Len())
+	default:
+		return ar.UnknownSize
+	}
+}
+
+func (tb temporaryBuffer) PrepareForReading() error {
+	f, ok := tb.ReadWriter.(*os.File)
+	if !ok {
+		return nil
+	}
+
+	err := f.Sync()
+	if err != nil {
+		return fmt.Errorf(
+			"sync contents of the data tarball temp file: %w", err)
+	}
+
+	_, err = f.Seek(0, io.SeekStart)
+	if err != nil {
+		return fmt.Errorf(
+			"seek to start of the data tarball temp file: %w", err)
+	}
+
+	return nil
+}
+
+func (tb temporaryBuffer) Close() error {
+	closer, ok := tb.ReadWriter.(io.Closer)
+	if ok {
+		err := closer.Close()
+		if err != nil {
+			return err
+		}
+	}
+
+	f, ok := tb.ReadWriter.(*os.File)
+	if ok {
+		err := os.Remove(f.Name())
+		if err != nil {
+			return err
+		}
+		fmt.Println("file removed")
+
+	}
+
+	return nil
+}
+
+func createDataTarball(info *nfpm.Info) (dataTarball *temporaryBuffer, md5sums []byte,
 	instSize int64, name string, err error,
 ) {
-	var (
-		dataTarball            bytes.Buffer
-		dataTarballWriteCloser io.WriteCloser
-	)
+	var tarballBuffer *temporaryBuffer
+	switch {
+	case info.Contents.Size() > 100*1024*1024:
+		tempFile, err := os.CreateTemp("", "nfpm_deb")
+		if err != nil {
+			return nil, nil, 0, "",
+				fmt.Errorf("creating temp file to buffer data tarball: %w", err)
+		}
+
+		tarballBuffer = &temporaryBuffer{ReadWriter: tempFile}
+		fmt.Println("using file")
+	default:
+		tarballBuffer = &temporaryBuffer{ReadWriter: &bytes.Buffer{}}
+		fmt.Println("using buffer")
+	}
+
+	var compressor io.WriteCloser
 
 	switch info.Deb.Compression {
 	case "", "gzip": // the default for now
-		dataTarballWriteCloser = gzip.NewWriter(&dataTarball)
+		compressor = gzip.NewWriter(tarballBuffer)
 		name = "data.tar.gz"
 	case "xz":
-		dataTarballWriteCloser, err = xz.NewWriter(&dataTarball)
+		compressor, err = xz.NewWriter(tarballBuffer)
 		if err != nil {
 			return nil, nil, 0, "", err
 		}
 		name = "data.tar.xz"
 	case "none":
-		dataTarballWriteCloser = nopCloser{Writer: &dataTarball}
+		compressor = nopCloser{Writer: tarballBuffer}
 		name = "data.tar"
 	default:
 		return nil, nil, 0, "", fmt.Errorf("unknown compression algorithm: %s", info.Deb.Compression)
 	}
 
 	// the writer is properly closed later, this is just in case that we error out
-	defer dataTarballWriteCloser.Close() // nolint: errcheck
+	defer compressor.Close() // nolint: errcheck
 
-	md5sums, instSize, err = fillDataTar(info, dataTarballWriteCloser)
+	md5sums, instSize, err = fillDataTar(info, compressor)
 	if err != nil {
 		return nil, nil, 0, "", err
 	}
 
-	if err := dataTarballWriteCloser.Close(); err != nil {
+	if err := compressor.Close(); err != nil {
 		return nil, nil, 0, "", fmt.Errorf("closing data tarball: %w", err)
 	}
 
-	return dataTarball.Bytes(), md5sums, instSize, name, nil
+	err = tarballBuffer.PrepareForReading()
+	if err != nil {
+		return nil, nil, 0, "", err
+	}
+
+	return tarballBuffer, md5sums, instSize, name, nil
 }
 
 func fillDataTar(info *nfpm.Info, w io.Writer) (md5sums []byte, instSize int64, err error) {
@@ -541,102 +751,6 @@ func formatChangelog(info *nfpm.Info) (string, error) {
 	return strings.TrimSpace(formattedChangelog) + "\n", nil
 }
 
-// nolint:funlen
-func createControl(instSize int64, md5sums []byte, info *nfpm.Info) (controlTarGz []byte, err error) {
-	var buf bytes.Buffer
-	compress := gzip.NewWriter(&buf)
-	out := tar.NewWriter(compress)
-	// the writers are properly closed later, this is just in case that we have
-	// an error in another part of the code.
-	defer out.Close()      // nolint: errcheck
-	defer compress.Close() // nolint: errcheck
-
-	var body bytes.Buffer
-	if err = writeControl(&body, controlData{
-		Info:          info,
-		InstalledSize: instSize / 1024,
-	}); err != nil {
-		return nil, err
-	}
-
-	filesToCreate := map[string][]byte{
-		"control":   body.Bytes(),
-		"md5sums":   md5sums,
-		"conffiles": conffiles(info),
-	}
-
-	if info.Changelog != "" {
-		changeLogData, err := formatChangelog(info)
-		if err != nil {
-			return nil, err
-		}
-
-		filesToCreate["changelog"] = []byte(changeLogData)
-	}
-
-	triggers := createTriggers(info)
-	if len(triggers) > 0 {
-		filesToCreate["triggers"] = triggers
-	}
-
-	for name, content := range filesToCreate {
-		if err := newFileInsideTar(out, name, content); err != nil {
-			return nil, err
-		}
-	}
-
-	type fileAndMode struct {
-		fileName string
-		mode     int64
-	}
-
-	specialFiles := map[string]*fileAndMode{}
-	specialFiles[info.Scripts.PreInstall] = &fileAndMode{
-		fileName: "preinst",
-		mode:     0o755,
-	}
-	specialFiles[info.Scripts.PostInstall] = &fileAndMode{
-		fileName: "postinst",
-		mode:     0o755,
-	}
-	specialFiles[info.Scripts.PreRemove] = &fileAndMode{
-		fileName: "prerm",
-		mode:     0o755,
-	}
-	specialFiles[info.Scripts.PostRemove] = &fileAndMode{
-		fileName: "postrm",
-		mode:     0o755,
-	}
-	specialFiles[info.Overridables.Deb.Scripts.Rules] = &fileAndMode{
-		fileName: "rules",
-		mode:     0o755,
-	}
-	specialFiles[info.Overridables.Deb.Scripts.Templates] = &fileAndMode{
-		fileName: "templates",
-		mode:     0o644,
-	}
-	specialFiles[info.Overridables.Deb.Scripts.Config] = &fileAndMode{
-		fileName: "config",
-		mode:     0o755,
-	}
-
-	for path, destMode := range specialFiles {
-		if path != "" {
-			if err := newFilePathInsideTar(out, path, destMode.fileName, destMode.mode); err != nil {
-				return nil, err
-			}
-		}
-	}
-
-	if err := out.Close(); err != nil {
-		return nil, fmt.Errorf("closing control.tar.gz: %w", err)
-	}
-	if err := compress.Close(); err != nil {
-		return nil, fmt.Errorf("closing control.tar.gz: %w", err)
-	}
-	return buf.Bytes(), nil
-}
-
 func newItemInsideTar(out *tar.Writer, content []byte, header *tar.Header) error {
 	if err := out.WriteHeader(header); err != nil {
 		return fmt.Errorf("cannot write header of %s file to control.tar.gz: %w", header.Name, err)
@@ -823,7 +937,7 @@ type controlData struct {
 	InstalledSize int64
 }
 
-func writeControl(w io.Writer, data controlData) error {
+func writeControlFile(w io.Writer, data controlData) error {
 	tmpl := template.New("control")
 	tmpl.Funcs(template.FuncMap{
 		"join": func(strs []string) string {

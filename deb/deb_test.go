@@ -118,7 +118,7 @@ func TestDebVersion(t *testing.T) {
 	info := exampleInfo()
 	info.Version = "1.0.0" //nolint:golint,goconst
 	var buf bytes.Buffer
-	err := writeControl(&buf, controlData{info, 0})
+	err := writeControlFile(&buf, controlData{info, 0})
 	require.NoError(t, err)
 	v := extractDebVersion(&buf)
 	require.Equal(t, "1.0.0", v)
@@ -129,7 +129,7 @@ func TestDebVersionWithRelease(t *testing.T) {
 	info.Version = "1.0.0" //nolint:golint,goconst
 	info.Release = "1"
 	var buf bytes.Buffer
-	err := writeControl(&buf, controlData{info, 0})
+	err := writeControlFile(&buf, controlData{info, 0})
 	require.NoError(t, err)
 	v := extractDebVersion(&buf)
 	require.Equal(t, "1.0.0-1", v)
@@ -141,7 +141,7 @@ func TestDebVersionWithPrerelease(t *testing.T) {
 	info := exampleInfo()
 	info.Version = "1.0.0" //nolint:golint,goconst
 	info.Prerelease = "1"
-	err := writeControl(&buf, controlData{info, 0})
+	err := writeControlFile(&buf, controlData{info, 0})
 	require.NoError(t, err)
 	v := extractDebVersion(&buf)
 	require.Equal(t, "1.0.0~1", v)
@@ -154,7 +154,7 @@ func TestDebVersionWithReleaseAndPrerelease(t *testing.T) {
 	info.Version = "1.0.0" //nolint:golint,goconst
 	info.Release = "2"
 	info.Prerelease = "rc1" //nolint:golint,goconst
-	err := writeControl(&buf, controlData{info, 0})
+	err := writeControlFile(&buf, controlData{info, 0})
 	require.NoError(t, err)
 	v := extractDebVersion(&buf)
 	require.Equal(t, "1.0.0~rc1-2", v)
@@ -166,7 +166,7 @@ func TestDebVersionWithVersionMetadata(t *testing.T) {
 	info := exampleInfo()
 	info.Version = "1.0.0+meta" //nolint:golint,goconst
 	info.VersionMetadata = ""
-	err := writeControl(&buf, controlData{info, 0})
+	err := writeControlFile(&buf, controlData{info, 0})
 	require.NoError(t, err)
 	v := extractDebVersion(&buf)
 	require.Equal(t, "1.0.0+meta", v)
@@ -175,7 +175,7 @@ func TestDebVersionWithVersionMetadata(t *testing.T) {
 
 	info.Version = "1.0.0" //nolint:golint,goconst
 	info.VersionMetadata = "meta"
-	err = writeControl(&buf, controlData{info, 0})
+	err = writeControlFile(&buf, controlData{info, 0})
 	require.NoError(t, err)
 	v = extractDebVersion(&buf)
 	require.Equal(t, "1.0.0+meta", v)
@@ -185,7 +185,7 @@ func TestDebVersionWithVersionMetadata(t *testing.T) {
 	info.Version = "1.0.0+foo" //nolint:golint,goconst
 	info.Prerelease = "alpha"
 	info.VersionMetadata = "meta"
-	err = writeControl(&buf, controlData{nfpm.WithDefaults(info), 0})
+	err = writeControlFile(&buf, controlData{nfpm.WithDefaults(info), 0})
 	require.NoError(t, err)
 	v = extractDebVersion(&buf)
 	require.Equal(t, "1.0.0~alpha+meta", v)
@@ -193,7 +193,7 @@ func TestDebVersionWithVersionMetadata(t *testing.T) {
 
 func TestControl(t *testing.T) {
 	var w bytes.Buffer
-	require.NoError(t, writeControl(&w, controlData{
+	require.NoError(t, writeControlFile(&w, controlData{
 		Info:          exampleInfo(),
 		InstalledSize: 10,
 	}))
@@ -228,7 +228,7 @@ func TestSpecialFiles(t *testing.T) {
 
 func TestNoJoinsControl(t *testing.T) {
 	var w bytes.Buffer
-	require.NoError(t, writeControl(&w, controlData{
+	require.NoError(t, writeControlFile(&w, controlData{
 		Info: nfpm.WithDefaults(&nfpm.Info{
 			Name:        "foo",
 			Arch:        "amd64",
@@ -262,7 +262,7 @@ func TestNoJoinsControl(t *testing.T) {
 
 func TestVersionControl(t *testing.T) {
 	var w bytes.Buffer
-	require.NoError(t, writeControl(&w, controlData{
+	require.NoError(t, writeControlFile(&w, controlData{
 		Info: nfpm.WithDefaults(&nfpm.Info{
 			Name:        "foo",
 			Arch:        "amd64",
@@ -399,7 +399,7 @@ func TestPathsToCreate(t *testing.T) {
 
 func TestMinimalFields(t *testing.T) {
 	var w bytes.Buffer
-	require.NoError(t, writeControl(&w, controlData{
+	require.NoError(t, writeControlFile(&w, controlData{
 		Info: nfpm.WithDefaults(&nfpm.Info{
 			Name:        "minimal",
 			Arch:        "arm64",
@@ -420,7 +420,7 @@ func TestMinimalFields(t *testing.T) {
 
 func TestDebEpoch(t *testing.T) {
 	var w bytes.Buffer
-	require.NoError(t, writeControl(&w, controlData{
+	require.NoError(t, writeControlFile(&w, controlData{
 		Info: nfpm.WithDefaults(&nfpm.Info{
 			Name:        "withepoch",
 			Arch:        "arm64",
@@ -442,7 +442,7 @@ func TestDebEpoch(t *testing.T) {
 
 func TestDebRules(t *testing.T) {
 	var w bytes.Buffer
-	require.NoError(t, writeControl(&w, controlData{
+	require.NoError(t, writeControlFile(&w, controlData{
 		Info: nfpm.WithDefaults(&nfpm.Info{
 			Name:        "lala",
 			Arch:        "arm64",
@@ -471,7 +471,7 @@ func TestDebRules(t *testing.T) {
 
 func TestMultilineFields(t *testing.T) {
 	var w bytes.Buffer
-	require.NoError(t, writeControl(&w, controlData{
+	require.NoError(t, writeControlFile(&w, controlData{
 		Info: nfpm.WithDefaults(&nfpm.Info{
 			Name:        "multiline",
 			Arch:        "riscv64",
@@ -546,7 +546,7 @@ func TestDebChangelogControl(t *testing.T) {
 	err := info.Validate()
 	require.NoError(t, err)
 
-	controlTarGz, err := createControl(0, []byte{}, info)
+	controlTarGz, err := writeControl(0, []byte{}, info)
 	require.NoError(t, err)
 
 	controlChangelog := extractFileFromTar(t, inflate(t, "gz", controlTarGz), "changelog")
@@ -566,7 +566,7 @@ func TestDebNoChangelogControlWithoutChangelogConfigured(t *testing.T) {
 	err := info.Validate()
 	require.NoError(t, err)
 
-	controlTarGz, err := createControl(0, []byte{}, info)
+	controlTarGz, err := writeControl(0, []byte{}, info)
 	require.NoError(t, err)
 
 	require.False(t, tarContains(t, inflate(t, "gz", controlTarGz), "changelog"))
@@ -636,7 +636,7 @@ func TestDebTriggers(t *testing.T) {
 	err := info.Validate()
 	require.NoError(t, err)
 
-	controlTarGz, err := createControl(0, []byte{}, info)
+	controlTarGz, err := writeControl(0, []byte{}, info)
 	require.NoError(t, err)
 
 	controlTriggers := extractFileFromTar(t, inflate(t, "gz", controlTarGz), "triggers")
@@ -675,7 +675,7 @@ func TestDebNoTriggersInControlIfNoneProvided(t *testing.T) {
 	err := info.Validate()
 	require.NoError(t, err)
 
-	controlTarGz, err := createControl(0, []byte{}, info)
+	controlTarGz, err := writeControl(0, []byte{}, info)
 	require.NoError(t, err)
 
 	require.False(t, tarContains(t, inflate(t, "gz", controlTarGz), "triggers"))
@@ -738,7 +738,7 @@ func TestEnsureRelativePrefixInTarballs(t *testing.T) {
 	require.NoError(t, err)
 	testRelativePathPrefixInTar(t, inflate(t, tarballName, dataTarball))
 
-	controlTarGz, err := createControl(instSize, md5sums, info)
+	controlTarGz, err := writeControl(instSize, md5sums, info)
 	require.NoError(t, err)
 	testRelativePathPrefixInTar(t, inflate(t, "gz", controlTarGz))
 }
@@ -759,7 +759,7 @@ func TestMD5Sums(t *testing.T) {
 	dataTarball, md5sums, instSize, tarballName, err := createDataTarball(info)
 	require.NoError(t, err)
 
-	controlTarGz, err := createControl(instSize, md5sums, info)
+	controlTarGz, err := writeControl(instSize, md5sums, info)
 	require.NoError(t, err)
 
 	md5sumsFile := extractFileFromTar(t, inflate(t, "gz", controlTarGz), "./md5sums")
@@ -1335,7 +1335,7 @@ func TestArches(t *testing.T) {
 
 func TestFields(t *testing.T) {
 	var w bytes.Buffer
-	require.NoError(t, writeControl(&w, controlData{
+	require.NoError(t, writeControlFile(&w, controlData{
 		Info: nfpm.WithDefaults(&nfpm.Info{
 			Name:        "foo",
 			Description: "Foo does things",

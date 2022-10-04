@@ -64,6 +64,14 @@ func (c Contents) ContainsDestination(dst string) bool {
 	return false
 }
 
+func (c Contents) Size() (size int64) {
+	for _, content := range c {
+		size += int64(content.FileInfo.Size)
+	}
+
+	return size
+}
+
 func (c *Content) WithFileInfoDefaults() *Content {
 	cc := &Content{
 		Source:      c.Source,
